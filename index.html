@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>AR Ping Pong V1</title>
+
+<style>
+html,body{
+  margin:0;
+  width:100%;
+  height:100%;
+  overflow:hidden;
+  background:#08111f;
+  font-family:Arial,sans-serif;
+  color:white;
+}
+
+#game{
+  position:relative;
+  width:100%;
+  height:100%;
+}
+
+canvas{
+  width:100%;
+  height:100%;
+  display:block;
+  touch-action:none;
+}
+
+#score{
+  position:absolute;
+  top:20px;
+  left:50%;
+  transform:translateX(-50%);
+  font-size:32px;
+  font-weight:bold;
+}
+
+#info{
+  position:absolute;
+  bottom:20px;
+  width:100%;
+  text-align:center;
+  font-size:16px;
+}
+</style>
+</head>
+
+<body>
+
+<div id="game">
+
+<div id="score">0 : 0</div>
+
+<canvas id="canvas"></canvas>
+
+<div id="info">
+Move your finger left and right 🏓
+</div>
+
+</div>
+
+<script>
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+let W,H;
+
+function resize(){
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+}
+
+resize();
+addEventListener("resize",resize);
+
+let playerScore = 0;
+let aiScore = 0;
+
+const paddle = {
+  x:0,
+  y:0,
+  w:110,
+  h:22
+};
+
+const ai = {
+  x:0,
+  y:80,
+  w:110,
+  h:22
+};
+
+const ball = {
+  x:0,
+  y:0,
+  r:14,
+  vx:4,
+  vy:6
+};
+
+function resetBall(){
+
+  ball.x = W/2;
+  ball.y = H/2;
+
+  ball.vx = (Math.random() > .5 ? 1 : -1) * 4;
+  ball.vy = (Math.random() > .5 ? 1 : -1) * 6;
+
+}
+
+function updateScore(){
+
+  document.getElementById("score").textContent =
+  playerScore + " : " + aiScore;
+
+}
+
+function movePlayer(x){
+
+  paddle.x = x - paddle.w/2;
+
+  if(paddle.x < 0)
+    paddle.x = 0;
+
+  if(paddle.x + paddle.w > W)
+    paddle.x = W - paddle.w;
+
+}
+
+canvas.addEventListener("touchmove",e=>{
+
+  e.preventDefault();
+
+  movePlayer(e.touches[0].clientX);
+
+},{passive:false});
+
+canvas.addEventListener("touchstart",e=>{
+
+  movePlayer(e.touches[0].clientX);
+
+});
+
+canvas.addEventListener("mousemove",e=>{
+
+  movePlayer(e.clientX);
+
+});
+
+function update(){
+
+  paddle.y = H - 100;
+
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+
+  // walls
+  if(ball.x < ball.r){
+
+    ball.x = ball.r;
+    ball.vx *= -1;
+
+  }
+
+  if(ball.x > W-ball.r){
+
+    ball.x = W-ball.r;
+    ball.vx *= -1;
+
+  }
+
+  // AI movement
+  ai.x += (ball.x - ai.x - ai.w/2) * 0.06;
+
+  if(ai.x < 0)
+    ai.x = 0;
+
+  if(ai.x + ai.w > W)
+    ai.x = W-ai.w;
+
+  // player hit
+  if(
+    ball.vy > 0 &&
+    ball.y + ball.r > paddle.y &&
+    ball.y - ball.r < paddle.y + paddle.h &&
+    ball.x > paddle.x &&
+    ball.x < paddle.x + paddle.w
+  ){
+
+    ball.y = paddle.y - ball.r;
+
+    ball.vy *= -1;
+
+    const hit =
+    (ball.x - (paddle.x+paddle.w/2))
+    /(paddle.w/2);
+
+    ball.vx += hit * 3;
+
+  }
+
+  // AI hit
+  if(
+    ball.vy < 0 &&
+    ball.y - ball.r < ai.y + ai.h &&
+    ball.y + ball.r > ai.y &&
+    ball.x > ai.x &&
+    ball.x < ai.x + ai.w
+  ){
+
+    ball.y = ai.y + ai.h + ball.r;
+
+    ball.vy *= -1;
+
+  }
+
+  // player scores
+  if(ball.y < -30){
+
+    playerScore++;
+
+    updateScore();
+    resetBall();
+
+  }
+
+  // AI scores
+  if(ball.y > H+30){
+
+    aiScore++;
+
+    updateScore();
+    resetBall();
+
+  }
+
+}
+
+function draw(){
+
+  ctx.clearRect(0,0,W,H);
+
+  // table
+  ctx.fillStyle="#126d57";
+  ctx.fillRect(15,45,W-30,H-90);
+
+  // center line
+  ctx.strokeStyle="white";
+  ctx.lineWidth=3;
+  ctx.setLineDash([15,15]);
+
+  ctx.beginPath();
+  ctx.moveTo(15,H/2);
+  ctx.lineTo(W-15,H/2);
+  ctx.stroke();
+
+  ctx.setLineDash([]);
+
+  // player paddle
+  ctx.fillStyle="#ff4141";
+  ctx.fillRect(
+    paddle.x,
+    paddle.y,
+    paddle.w,
+    paddle.h
+  );
+
+  // AI paddle
+  ctx.fillStyle="#4b8cff";
+  ctx.fillRect(
+    ai.x,
+    ai.y,
+    ai.w,
+    ai.h
+  );
+
+  // ball
+  ctx.fillStyle="white";
+  ctx.beginPath();
+
+  ctx.arc(
+    ball.x,
+    ball.y,
+    ball.r,
+    0,
+    Math.PI*2
+  );
+
+  ctx.fill();
+
+}
+
+function loop(){
+
+  update();
+  draw();
+
+  requestAnimationFrame(loop);
+
+}
+
+resetBall();
+loop();
+
+</script>
+
+</body>
+</html>
