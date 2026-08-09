@@ -2,8 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
-<title>AR Ping Pong V1</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>AR Ping Pong V2</title>
 
 <style>
 html,body{
@@ -11,22 +11,31 @@ html,body{
   width:100%;
   height:100%;
   overflow:hidden;
-  background:#08111f;
-  font-family:Arial,sans-serif;
+  background:#000;
   color:white;
+  font-family:Arial,sans-serif;
 }
 
-#game{
+#wrap{
   position:relative;
   width:100%;
   height:100%;
 }
 
-canvas{
+video{
+  position:absolute;
+  inset:0;
   width:100%;
   height:100%;
-  display:block;
-  touch-action:none;
+  object-fit:cover;
+  transform:scaleX(-1);
+}
+
+canvas{
+  position:absolute;
+  inset:0;
+  width:100%;
+  height:100%;
 }
 
 #score{
@@ -34,94 +43,278 @@ canvas{
   top:20px;
   left:50%;
   transform:translateX(-50%);
-  font-size:32px;
+  z-index:5;
+  font-size:34px;
   font-weight:bold;
+  text-shadow:0 2px 5px #000;
 }
 
-#info{
+#status{
   position:absolute;
-  bottom:20px;
+  bottom:25px;
+  left:0;
   width:100%;
+  z-index:5;
   text-align:center;
-  font-size:16px;
+  font-size:18px;
+  text-shadow:0 2px 5px #000;
+}
+
+#startBtn{
+  position:absolute;
+  top:50%;
+  left:50%;
+  transform:translate(-50%,-50%);
+  z-index:10;
+  font-size:24px;
+  font-weight:bold;
+  padding:18px 30px;
+  border:0;
+  border-radius:18px;
 }
 </style>
 </head>
 
 <body>
 
-<div id="game">
+<div id="wrap">
 
-<div id="score">0 : 0</div>
+<video id="video" autoplay playsinline muted></video>
 
 <canvas id="canvas"></canvas>
 
-<div id="info">
-Move your finger left and right 🏓
-</div>
+<div id="score">0 : 0</div>
+
+<div id="status">Press START CAMERA</div>
+
+<button id="startBtn">START CAMERA 📷</button>
 
 </div>
 
-<script>
+<script type="module">
 
+import {
+  HandLandmarker,
+  FilesetResolver
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm";
+
+const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-let W,H;
+const startBtn = document.getElementById("startBtn");
+const statusText = document.getElementById("status");
 
-function resize(){
-  W = canvas.width = innerWidth;
-  H = canvas.height = innerHeight;
-}
+let W = 0;
+let H = 0;
 
-resize();
-addEventListener("resize",resize);
+let handLandmarker = null;
+
+let lastVideoTime = -1;
 
 let playerScore = 0;
 let aiScore = 0;
 
+let targetPaddleX = 0;
+
 const paddle = {
   x:0,
   y:0,
-  w:110,
-  h:22
+  w:120,
+  h:24
 };
 
 const ai = {
   x:0,
-  y:80,
-  w:110,
-  h:22
+  y:90,
+  w:120,
+  h:24
 };
 
 const ball = {
   x:0,
   y:0,
-  r:14,
+  r:15,
   vx:4,
   vy:6
 };
 
+function resize(){
+
+  W = canvas.width = innerWidth;
+  H = canvas.height = innerHeight;
+
+  paddle.y = H - 110;
+
+}
+
+resize();
+
+window.addEventListener("resize",resize);
+
 function resetBall(){
 
-  ball.x = W/2;
-  ball.y = H/2;
+  ball.x = W / 2;
+  ball.y = H / 2;
 
-  ball.vx = (Math.random() > .5 ? 1 : -1) * 4;
-  ball.vy = (Math.random() > .5 ? 1 : -1) * 6;
+  ball.vx =
+    (Math.random() > 0.5 ? 1 : -1) * 4;
+
+  ball.vy =
+    (Math.random() > 0.5 ? 1 : -1) * 6;
 
 }
 
 function updateScore(){
 
   document.getElementById("score").textContent =
-  playerScore + " : " + aiScore;
+    playerScore + " : " + aiScore;
 
 }
 
-function movePlayer(x){
+async function setupHandTracking(){
 
-  paddle.x = x - paddle.w/2;
+  statusText.textContent = "Loading hand tracking...";
+
+  const vision =
+    await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+    );
+
+  handLandmarker =
+    await HandLandmarker.createFromOptions(
+      vision,
+      {
+        baseOptions:{
+          modelAssetPath:
+          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+          delegate:"GPU"
+        },
+
+        runningMode:"VIDEO",
+        numHands:1,
+
+        minHandDetectionConfidence:0.5,
+        minHandPresenceConfidence:0.5,
+        minTrackingConfidence:0.5
+      }
+    );
+
+  statusText.textContent = "Show your hand ✋";
+}
+
+async function startCamera(){
+
+  startBtn.disabled = true;
+
+  try{
+
+    const stream =
+      await navigator.mediaDevices.getUserMedia({
+        video:{
+          facingMode:"user",
+          width:{ideal:640},
+          height:{ideal:480}
+        },
+        audio:false
+      });
+
+    video.srcObject = stream;
+
+    await video.play();
+
+    await setupHandTracking();
+
+    startBtn.style.display = "none";
+
+    requestAnimationFrame(loop);
+
+  }
+  catch(err){
+
+    console.error(err);
+
+    statusText.textContent =
+      "Camera error — allow camera permission";
+
+    startBtn.disabled = false;
+
+  }
+
+}
+
+startBtn.addEventListener("click",startCamera);
+
+function detectHand(){
+
+  if(
+    !handLandmarker ||
+    video.readyState < 2
+  ){
+    return;
+  }
+
+  if(video.currentTime === lastVideoTime){
+    return;
+  }
+
+  lastVideoTime = video.currentTime;
+
+  const result =
+    handLandmarker.detectForVideo(
+      video,
+      performance.now()
+    );
+
+  if(
+    result.landmarks &&
+    result.landmarks.length > 0
+  ){
+
+    const hand = result.landmarks[0];
+
+    // Landmark 9 = middle finger MCP.
+    // Stable point near center of palm.
+    const palm = hand[9];
+
+    // Camera is mirrored.
+    const screenX =
+      (1 - palm.x) * W;
+
+    targetPaddleX =
+      screenX - paddle.w / 2;
+
+    statusText.textContent =
+      "HAND FOUND ✋";
+
+    // Draw tracking dot
+    ctx.beginPath();
+    ctx.arc(
+      screenX,
+      palm.y * H,
+      12,
+      0,
+      Math.PI * 2
+    );
+
+    ctx.fillStyle="yellow";
+    ctx.fill();
+
+  }
+  else{
+
+    statusText.textContent =
+      "Show your hand ✋";
+
+  }
+
+}
+
+function update(){
+
+  // Smooth hand control
+  paddle.x +=
+    (targetPaddleX - paddle.x) * 0.35;
 
   if(paddle.x < 0)
     paddle.x = 0;
@@ -129,36 +322,10 @@ function movePlayer(x){
   if(paddle.x + paddle.w > W)
     paddle.x = W - paddle.w;
 
-}
-
-canvas.addEventListener("touchmove",e=>{
-
-  e.preventDefault();
-
-  movePlayer(e.touches[0].clientX);
-
-},{passive:false});
-
-canvas.addEventListener("touchstart",e=>{
-
-  movePlayer(e.touches[0].clientX);
-
-});
-
-canvas.addEventListener("mousemove",e=>{
-
-  movePlayer(e.clientX);
-
-});
-
-function update(){
-
-  paddle.y = H - 100;
-
   ball.x += ball.vx;
   ball.y += ball.vy;
 
-  // walls
+  // Side walls
   if(ball.x < ball.r){
 
     ball.x = ball.r;
@@ -166,23 +333,24 @@ function update(){
 
   }
 
-  if(ball.x > W-ball.r){
+  if(ball.x > W - ball.r){
 
-    ball.x = W-ball.r;
+    ball.x = W - ball.r;
     ball.vx *= -1;
 
   }
 
-  // AI movement
-  ai.x += (ball.x - ai.x - ai.w/2) * 0.06;
+  // AI
+  ai.x +=
+    (ball.x - ai.x - ai.w/2) * 0.07;
 
   if(ai.x < 0)
     ai.x = 0;
 
   if(ai.x + ai.w > W)
-    ai.x = W-ai.w;
+    ai.x = W - ai.w;
 
-  // player hit
+  // Player hit
   if(
     ball.vy > 0 &&
     ball.y + ball.r > paddle.y &&
@@ -191,13 +359,17 @@ function update(){
     ball.x < paddle.x + paddle.w
   ){
 
-    ball.y = paddle.y - ball.r;
+    ball.y =
+      paddle.y - ball.r;
 
-    ball.vy *= -1;
+    ball.vy =
+      -Math.abs(ball.vy);
 
     const hit =
-    (ball.x - (paddle.x+paddle.w/2))
-    /(paddle.w/2);
+      (ball.x -
+      (paddle.x + paddle.w/2))
+      /
+      (paddle.w/2);
 
     ball.vx += hit * 3;
 
@@ -212,13 +384,15 @@ function update(){
     ball.x < ai.x + ai.w
   ){
 
-    ball.y = ai.y + ai.h + ball.r;
+    ball.y =
+      ai.y + ai.h + ball.r;
 
-    ball.vy *= -1;
+    ball.vy =
+      Math.abs(ball.vy);
 
   }
 
-  // player scores
+  // Player scores
   if(ball.y < -30){
 
     playerScore++;
@@ -229,7 +403,7 @@ function update(){
   }
 
   // AI scores
-  if(ball.y > H+30){
+  if(ball.y > H + 30){
 
     aiScore++;
 
@@ -244,33 +418,41 @@ function draw(){
 
   ctx.clearRect(0,0,W,H);
 
-  // table
-  ctx.fillStyle="#126d57";
-  ctx.fillRect(15,45,W-30,H-90);
+  // Transparent AR table area
+  ctx.fillStyle =
+    "rgba(0,120,90,0.30)";
 
-  // center line
+  ctx.fillRect(
+    20,
+    70,
+    W-40,
+    H-140
+  );
+
+  // Table border
   ctx.strokeStyle="white";
   ctx.lineWidth=3;
+
+  ctx.strokeRect(
+    20,
+    70,
+    W-40,
+    H-140
+  );
+
+  // Net
   ctx.setLineDash([15,15]);
 
   ctx.beginPath();
-  ctx.moveTo(15,H/2);
-  ctx.lineTo(W-15,H/2);
+  ctx.moveTo(20,H/2);
+  ctx.lineTo(W-20,H/2);
   ctx.stroke();
 
   ctx.setLineDash([]);
 
-  // player paddle
-  ctx.fillStyle="#ff4141";
-  ctx.fillRect(
-    paddle.x,
-    paddle.y,
-    paddle.w,
-    paddle.h
-  );
-
   // AI paddle
-  ctx.fillStyle="#4b8cff";
+  ctx.fillStyle="#4385ff";
+
   ctx.fillRect(
     ai.x,
     ai.y,
@@ -278,8 +460,17 @@ function draw(){
     ai.h
   );
 
-  // ball
-  ctx.fillStyle="white";
+  // Player paddle
+  ctx.fillStyle="#ff3131";
+
+  ctx.fillRect(
+    paddle.x,
+    paddle.y,
+    paddle.w,
+    paddle.h
+  );
+
+  // Ball
   ctx.beginPath();
 
   ctx.arc(
@@ -290,21 +481,30 @@ function draw(){
     Math.PI*2
   );
 
+  ctx.fillStyle="white";
   ctx.fill();
 
 }
 
 function loop(){
 
-  update();
   draw();
+
+  detectHand();
+
+  update();
 
   requestAnimationFrame(loop);
 
 }
 
+targetPaddleX =
+  W/2 - paddle.w/2;
+
+paddle.x =
+  targetPaddleX;
+
 resetBall();
-loop();
 
 </script>
 
