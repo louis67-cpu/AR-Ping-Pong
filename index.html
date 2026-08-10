@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>AR Ping Pong V2</title>
+<meta name="viewport"
+content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+
+<title>AR Ping Pong V3</title>
 
 <style>
 html,body{
@@ -12,8 +14,8 @@ html,body{
   height:100%;
   overflow:hidden;
   background:#000;
-  color:white;
   font-family:Arial,sans-serif;
+  color:white;
 }
 
 #wrap{
@@ -46,31 +48,30 @@ canvas{
   z-index:5;
   font-size:34px;
   font-weight:bold;
-  text-shadow:0 2px 5px #000;
+  text-shadow:0 3px 7px #000;
 }
 
 #status{
   position:absolute;
-  bottom:25px;
-  left:0;
+  bottom:20px;
   width:100%;
-  z-index:5;
   text-align:center;
-  font-size:18px;
+  z-index:5;
+  font-size:17px;
   text-shadow:0 2px 5px #000;
 }
 
-#startBtn{
+#start{
   position:absolute;
   top:50%;
   left:50%;
   transform:translate(-50%,-50%);
   z-index:10;
-  font-size:24px;
-  font-weight:bold;
-  padding:18px 30px;
+  padding:18px 28px;
   border:0;
   border-radius:18px;
+  font-size:22px;
+  font-weight:bold;
 }
 </style>
 </head>
@@ -81,13 +82,13 @@ canvas{
 
 <video id="video" autoplay playsinline muted></video>
 
-<canvas id="canvas"></canvas>
+<canvas id="game"></canvas>
 
 <div id="score">0 : 0</div>
 
-<div id="status">Press START CAMERA</div>
+<div id="status">Press START</div>
 
-<button id="startBtn">START CAMERA 📷</button>
+<button id="start">START CAMERA 📷</button>
 
 </div>
 
@@ -96,415 +97,1100 @@ canvas{
 import {
   HandLandmarker,
   FilesetResolver
-} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm";
+} from
+"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/+esm";
 
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d");
 
-const startBtn = document.getElementById("startBtn");
-const statusText = document.getElementById("status");
+const video =
+document.getElementById("video");
 
-let W = 0;
-let H = 0;
+const canvas =
+document.getElementById("game");
 
-let handLandmarker = null;
+const ctx =
+canvas.getContext("2d");
 
-let lastVideoTime = -1;
+const startBtn =
+document.getElementById("start");
 
-let playerScore = 0;
-let aiScore = 0;
+const status =
+document.getElementById("status");
 
-let targetPaddleX = 0;
+const scoreText =
+document.getElementById("score");
 
-const paddle = {
-  x:0,
-  y:0,
-  w:120,
-  h:24
+
+let W,H;
+
+let handLandmarker=null;
+let lastVideoTime=-1;
+
+let playerScore=0;
+let aiScore=0;
+
+
+/* =========================
+   TABLE / WORLD
+========================= */
+
+const table={
+  nearY:0,
+  farY:0,
+  nearHalf:0,
+  farHalf:0
 };
 
-const ai = {
+
+/*
+z = 0   player side
+z = 1   opponent side
+
+x = -1 left edge
+x = +1 right edge
+
+h = height above table
+*/
+
+
+const ball={
   x:0,
-  y:90,
-  w:120,
-  h:24
+  z:.75,
+  h:.22,
+
+  vx:0,
+  vz:-0.72,
+  vh:0,
+
+  r:14,
+
+  bounceCount:0,
+  lastSide:"ai"
 };
 
-const ball = {
+
+const player={
   x:0,
-  y:0,
-  r:15,
-  vx:4,
-  vy:6
+  targetX:0,
+  speed:0
 };
+
+
+const ai={
+  x:0
+};
+
+
+const GRAVITY=2.7;
+
+const NET_HEIGHT=.14;
+
+
+/* =========================
+   RESIZE
+========================= */
 
 function resize(){
 
-  W = canvas.width = innerWidth;
-  H = canvas.height = innerHeight;
+  W=canvas.width=innerWidth;
+  H=canvas.height=innerHeight;
 
-  paddle.y = H - 110;
+  table.nearY=H*.82;
+  table.farY=H*.25;
 
+  table.nearHalf=W*.46;
+  table.farHalf=W*.22;
 }
 
 resize();
 
-window.addEventListener("resize",resize);
+addEventListener("resize",resize);
 
-function resetBall(){
 
-  ball.x = W / 2;
-  ball.y = H / 2;
+/* =========================
+   PERSPECTIVE
+========================= */
 
-  ball.vx =
-    (Math.random() > 0.5 ? 1 : -1) * 12;
+function tableY(z){
 
-  ball.vy =
-    (Math.random() > 0.5 ? 1 : -1) * 18;
-
+  return table.nearY +
+  (table.farY-table.nearY)*z;
 }
 
-function updateScore(){
 
-  document.getElementById("score").textContent =
-    playerScore + " : " + aiScore;
+function tableHalfWidth(z){
 
+  return table.nearHalf +
+  (table.farHalf-table.nearHalf)*z;
 }
 
-async function setupHandTracking(){
 
-  statusText.textContent = "Loading hand tracking...";
+function worldToScreen(x,z,h=0){
 
-  const vision =
-    await FilesetResolver.forVisionTasks(
-      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
-    );
+  const y=tableY(z);
 
-  handLandmarker =
-    await HandLandmarker.createFromOptions(
-      vision,
-      {
-        baseOptions:{
-          modelAssetPath:
-          "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-          delegate:"GPU"
-        },
+  const half=
+  tableHalfWidth(z);
 
-        runningMode:"VIDEO",
-        numHands:1,
+  const sx=
+  W/2 + x*half;
 
-        minHandDetectionConfidence:0.5,
-        minHandPresenceConfidence:0.5,
-        minTrackingConfidence:0.5
-      }
-    );
+  /*
+  Raise ball visually above table.
+  Nearby objects appear larger.
+  */
 
-  statusText.textContent = "Show your hand ✋";
+  const perspective=
+  1.15-z*.45;
+
+  const sy=
+  y-h*H*.46*perspective;
+
+  return {
+    x:sx,
+    y:sy
+  };
 }
+
+
+/* =========================
+   HAND TRACKING
+========================= */
+
+async function setupHands(){
+
+  status.textContent=
+  "Loading hand tracking...";
+
+  const vision=
+  await FilesetResolver.forVisionTasks(
+    "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm"
+  );
+
+  handLandmarker=
+  await HandLandmarker.createFromOptions(
+    vision,
+    {
+      baseOptions:{
+        modelAssetPath:
+        "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
+
+        delegate:"GPU"
+      },
+
+      runningMode:"VIDEO",
+      numHands:1,
+
+      minHandDetectionConfidence:.5,
+      minHandPresenceConfidence:.5,
+      minTrackingConfidence:.5
+    }
+  );
+
+  status.textContent=
+  "Show your hand ✋";
+}
+
+
+/* =========================
+   CAMERA
+========================= */
 
 async function startCamera(){
 
-  startBtn.disabled = true;
+  startBtn.disabled=true;
 
   try{
 
-    const stream =
-      await navigator.mediaDevices.getUserMedia({
-        video:{
-          facingMode:"user",
-          width:{ideal:640},
-          height:{ideal:480}
-        },
-        audio:false
-      });
+    const stream=
+    await navigator.mediaDevices.getUserMedia({
+      video:{
+        facingMode:"user",
+        width:{ideal:640},
+        height:{ideal:480}
+      },
 
-    video.srcObject = stream;
+      audio:false
+    });
+
+    video.srcObject=stream;
 
     await video.play();
 
-    await setupHandTracking();
+    await setupHands();
 
-    startBtn.style.display = "none";
+    startBtn.style.display="none";
+
+    resetBall();
+
+    lastTime=performance.now();
 
     requestAnimationFrame(loop);
 
   }
+
   catch(err){
 
     console.error(err);
 
-    statusText.textContent =
-      "Camera error — allow camera permission";
+    status.textContent=
+    "Camera error — allow camera permission";
 
-    startBtn.disabled = false;
-
+    startBtn.disabled=false;
   }
-
 }
 
-startBtn.addEventListener("click",startCamera);
+startBtn.addEventListener(
+  "click",
+  startCamera
+);
+
+
+/* =========================
+   DETECT HAND
+========================= */
+
+let previousHandX=.5;
+
 
 function detectHand(){
 
   if(
     !handLandmarker ||
-    video.readyState < 2
-  ){
-    return;
-  }
+    video.readyState<2
+  ) return;
 
-  if(video.currentTime === lastVideoTime){
-    return;
-  }
 
-  lastVideoTime = video.currentTime;
+  if(
+    video.currentTime===
+    lastVideoTime
+  ) return;
 
-  const result =
-    handLandmarker.detectForVideo(
-      video,
-      performance.now()
-    );
+
+  lastVideoTime=
+  video.currentTime;
+
+
+  const result=
+  handLandmarker.detectForVideo(
+    video,
+    performance.now()
+  );
+
 
   if(
     result.landmarks &&
-    result.landmarks.length > 0
+    result.landmarks.length
   ){
 
-    const hand = result.landmarks[0];
+    const hand=
+    result.landmarks[0];
 
-    // Landmark 9 = middle finger MCP.
-    // Stable point near center of palm.
-    const palm = hand[9];
+    /*
+    Middle finger MCP.
+    Stable palm position.
+    */
 
-    // Camera is mirrored.
-    const screenX =
-      (1 - palm.x) * W;
+    const palm=hand[9];
 
-    targetPaddleX =
-      screenX - paddle.w / 2;
+    const mirrored=
+    1-palm.x;
 
-    statusText.textContent =
-      "HAND FOUND ✋";
+    /*
+    Convert camera position
+    to table coordinates -1..1
+    */
 
-    // Draw tracking dot
-    ctx.beginPath();
-    ctx.arc(
-      screenX,
-      palm.y * H,
-      12,
-      0,
-      Math.PI * 2
+    let normalized=
+    (mirrored-.5)*2.25;
+
+    normalized=
+    Math.max(
+      -1,
+      Math.min(1,normalized)
     );
 
-    ctx.fillStyle="yellow";
-    ctx.fill();
+
+    player.targetX=
+    normalized;
+
+
+    player.speed=
+    Math.abs(
+      mirrored-previousHandX
+    );
+
+
+    previousHandX=
+    mirrored;
+
+
+    status.textContent=
+    "HAND FOUND ✋";
 
   }
+
   else{
 
-    statusText.textContent =
-      "Show your hand ✋";
+    status.textContent=
+    "Show your hand ✋";
+  }
+}
 
+
+/* =========================
+   RESET BALL
+========================= */
+
+function resetBall(){
+
+  /*
+  AI serves toward player
+  */
+
+  ball.x=
+  (Math.random()-.5)*.5;
+
+  ball.z=.88;
+
+  ball.h=.16;
+
+  ball.vx=
+  (Math.random()-.5)*.18;
+
+  ball.vz=-.74;
+
+  ball.vh=.30;
+
+  ball.bounceCount=0;
+
+  ball.lastSide="ai";
+}
+
+
+/* =========================
+   SCORE
+========================= */
+
+function updateScore(){
+
+  scoreText.textContent=
+  playerScore+" : "+aiScore;
+}
+
+
+function pointPlayer(){
+
+  playerScore++;
+
+  updateScore();
+
+  setTimeout(
+    resetBall,
+    500
+  );
+}
+
+
+function pointAI(){
+
+  aiScore++;
+
+  updateScore();
+
+  setTimeout(
+    resetBall,
+    500
+  );
+}
+
+
+/* =========================
+   PLAYER HIT
+========================= */
+
+function playerHit(){
+
+  /*
+  Fast real-hand movement
+  = harder shot
+  */
+
+  const smash=
+  Math.min(
+    player.speed*7,
+    .45
+  );
+
+
+  ball.vz=
+  .78+smash;
+
+
+  /*
+  Aim depending on
+  where racket hits ball
+  */
+
+  const offset=
+  ball.x-player.x;
+
+
+  ball.vx=
+  offset*.7 +
+  (player.speed*.8);
+
+
+  /*
+  Lift ball above net
+  */
+
+  ball.vh=
+  .92+smash;
+
+
+  ball.bounceCount=0;
+
+  ball.lastSide="player";
+}
+
+
+/* =========================
+   AI RETURN
+========================= */
+
+function aiHit(){
+
+  ball.vz=
+  -.80;
+
+
+  /*
+  AI aims around player
+  */
+
+  const target=
+  player.x +
+  (Math.random()-.5)*.7;
+
+
+  ball.vx=
+  (target-ball.x)*.55;
+
+
+  ball.vh=
+  .88;
+
+
+  ball.bounceCount=0;
+
+  ball.lastSide="ai";
+}
+
+
+/* =========================
+   PHYSICS
+========================= */
+
+let lastZ=.5;
+
+
+function update(dt){
+
+  /*
+  Smooth player's racket
+  */
+
+  player.x +=
+  (player.targetX-player.x)
+  *.38;
+
+
+  /*
+  AI follows incoming ball
+  */
+
+  if(ball.vz>0){
+
+    ai.x +=
+    (ball.x-ai.x)
+    *.09;
+  }
+
+
+  ai.x=
+  Math.max(
+    -.92,
+    Math.min(.92,ai.x)
+  );
+
+
+  lastZ=ball.z;
+
+
+  ball.x +=
+  ball.vx*dt;
+
+  ball.z +=
+  ball.vz*dt;
+
+  ball.h +=
+  ball.vh*dt;
+
+  ball.vh -=
+  GRAVITY*dt;
+
+
+  /*
+  SIDE OF TABLE
+  */
+
+  const currentSide=
+  ball.z<.5
+  ? "player"
+  : "ai";
+
+
+  /*
+  BALL BOUNCES
+  */
+
+  if(ball.h<=0){
+
+    /*
+    Ball must still be
+    inside table
+    */
+
+    if(
+      ball.z>=0 &&
+      ball.z<=1 &&
+      Math.abs(ball.x)<=1
+    ){
+
+      ball.h=.005;
+
+      ball.vh=
+      Math.abs(ball.vh)*.72;
+
+
+      if(
+        currentSide===
+        ball.lastSide
+      ){
+
+        ball.bounceCount++;
+
+      }
+
+      else{
+
+        ball.bounceCount=1;
+        ball.lastSide=currentSide;
+
+      }
+
+
+      /*
+      Double bounce
+      */
+
+      if(ball.bounceCount>=2){
+
+        if(currentSide==="player")
+          pointAI();
+        else
+          pointPlayer();
+
+        return;
+      }
+
+    }
+
+  }
+
+
+  /*
+  NET COLLISION
+  */
+
+  const crossedNet=
+  (
+    lastZ<.5 &&
+    ball.z>=.5
+  ) ||
+  (
+    lastZ>.5 &&
+    ball.z<=.5
+  );
+
+
+  if(
+    crossedNet &&
+    ball.h<NET_HEIGHT
+  ){
+
+    /*
+    Ball hits net
+    and loses momentum
+    */
+
+    ball.vz*=-.25;
+
+    ball.vx*=.4;
+
+    ball.vh=.15;
+  }
+
+
+  /*
+  PLAYER RACKET COLLISION
+  */
+
+  if(
+    ball.vz<0 &&
+    ball.z<.075 &&
+    ball.z>-.04 &&
+    ball.h>.015 &&
+    ball.h<.38
+  ){
+
+    const distance=
+    Math.abs(
+      ball.x-player.x
+    );
+
+
+    if(distance<.38){
+
+      playerHit();
+
+    }
+
+  }
+
+
+  /*
+  AI RACKET COLLISION
+  */
+
+  if(
+    ball.vz>0 &&
+    ball.z>.925 &&
+    ball.z<1.04 &&
+    ball.h>.01 &&
+    ball.h<.38
+  ){
+
+    const distance=
+    Math.abs(
+      ball.x-ai.x
+    );
+
+
+    if(distance<.42){
+
+      aiHit();
+
+    }
+
+  }
+
+
+  /*
+  BALL MISSES TABLE
+  */
+
+  if(
+    ball.z<-.18
+  ){
+
+    pointAI();
+  }
+
+
+  if(
+    ball.z>1.18
+  ){
+
+    pointPlayer();
+  }
+
+
+  /*
+  Ball exits left/right
+  */
+
+  if(
+    Math.abs(ball.x)>1.7
+  ){
+
+    if(ball.vz<0)
+      pointAI();
+    else
+      pointPlayer();
   }
 
 }
 
-function update(){
 
-  // Smooth hand control
-  paddle.x +=
-    (targetPaddleX - paddle.x) * 0.35;
+/* =========================
+   DRAW TABLE
+========================= */
 
-  if(paddle.x < 0)
-    paddle.x = 0;
+function drawTable(){
 
-  if(paddle.x + paddle.w > W)
-    paddle.x = W - paddle.w;
+  const nearLeft={
+    x:W/2-table.nearHalf,
+    y:table.nearY
+  };
 
-  ball.x += ball.vx;
-  ball.y += ball.vy;
+  const nearRight={
+    x:W/2+table.nearHalf,
+    y:table.nearY
+  };
 
-  // Side walls
-  if(ball.x < ball.r){
+  const farLeft={
+    x:W/2-table.farHalf,
+    y:table.farY
+  };
 
-    ball.x = ball.r;
-    ball.vx *= -1;
+  const farRight={
+    x:W/2+table.farHalf,
+    y:table.farY
+  };
 
-  }
 
-  if(ball.x > W - ball.r){
-
-    ball.x = W - ball.r;
-    ball.vx *= -1;
-
-  }
-
-  // AI
-  ai.x +=
-    (ball.x - ai.x - ai.w/2) * 0.18;
-
-  if(ai.x < 0)
-    ai.x = 0;
-
-  if(ai.x + ai.w > W)
-    ai.x = W - ai.w;
-
-  // Player hit
-  if(
-    ball.vy > 0 &&
-    ball.y + ball.r > paddle.y &&
-    ball.y - ball.r < paddle.y + paddle.h &&
-    ball.x > paddle.x &&
-    ball.x < paddle.x + paddle.w
-  ){
-
-    ball.y =
-      paddle.y - ball.r;
-
-    ball.vy =
-      -Math.abs(ball.vy);
-
-    const hit =
-      (ball.x -
-      (paddle.x + paddle.w/2))
-      /
-      (paddle.w/2);
-
-    ball.vx += hit * 3;
-
-  }
-
-  // AI hit
-  if(
-    ball.vy < 0 &&
-    ball.y - ball.r < ai.y + ai.h &&
-    ball.y + ball.r > ai.y &&
-    ball.x > ai.x &&
-    ball.x < ai.x + ai.w
-  ){
-
-    ball.y =
-      ai.y + ai.h + ball.r;
-
-    ball.vy =
-      Math.abs(ball.vy);
-
-  }
-
-  // Player scores
-  if(ball.y < -30){
-
-    playerScore++;
-
-    updateScore();
-    resetBall();
-
-  }
-
-  // AI scores
-  if(ball.y > H + 30){
-
-    aiScore++;
-
-    updateScore();
-    resetBall();
-
-  }
-
-}
-
-function draw(){
-
-  ctx.clearRect(0,0,W,H);
-
-  // Transparent AR table area
-  ctx.fillStyle =
-    "rgba(0,120,90,0.30)";
-
-  ctx.fillRect(
-    20,
-    70,
-    W-40,
-    H-140
-  );
-
-  // Table border
-  ctx.strokeStyle="white";
-  ctx.lineWidth=3;
-
-  ctx.strokeRect(
-    20,
-    70,
-    W-40,
-    H-140
-  );
-
-  // Net
-  ctx.setLineDash([15,15]);
+  /*
+  TABLE
+  */
 
   ctx.beginPath();
-  ctx.moveTo(20,H/2);
-  ctx.lineTo(W-20,H/2);
+
+  ctx.moveTo(
+    farLeft.x,
+    farLeft.y
+  );
+
+  ctx.lineTo(
+    farRight.x,
+    farRight.y
+  );
+
+  ctx.lineTo(
+    nearRight.x,
+    nearRight.y
+  );
+
+  ctx.lineTo(
+    nearLeft.x,
+    nearLeft.y
+  );
+
+  ctx.closePath();
+
+
+  ctx.fillStyle=
+  "rgba(0,190,160,.72)";
+
+  ctx.fill();
+
+
+  ctx.strokeStyle=
+  "white";
+
+  ctx.lineWidth=4;
+
   ctx.stroke();
 
-  ctx.setLineDash([]);
 
-  // AI paddle
-  ctx.fillStyle="#4385ff";
+  /*
+  CENTER LINE
+  */
 
-  ctx.fillRect(
-    ai.x,
-    ai.y,
-    ai.w,
-    ai.h
-  );
-
-  // Player paddle
-  ctx.fillStyle="#ff3131";
-
-  ctx.fillRect(
-    paddle.x,
-    paddle.y,
-    paddle.w,
-    paddle.h
-  );
-
-  // Ball
   ctx.beginPath();
 
-  ctx.arc(
-    ball.x,
-    ball.y,
-    ball.r,
+  ctx.moveTo(
+    W/2,
+    table.nearY
+  );
+
+  ctx.lineTo(
+    W/2,
+    table.farY
+  );
+
+  ctx.lineWidth=2;
+
+  ctx.stroke();
+
+
+  /*
+  NET
+  */
+
+  const netY=
+  tableY(.5);
+
+  const netHalf=
+  tableHalfWidth(.5);
+
+
+  ctx.beginPath();
+
+  ctx.moveTo(
+    W/2-netHalf-15,
+    netY
+  );
+
+  ctx.lineTo(
+    W/2+netHalf+15,
+    netY
+  );
+
+  ctx.strokeStyle=
+  "#eee";
+
+  ctx.lineWidth=5;
+
+  ctx.stroke();
+
+
+  /*
+  Net posts
+  */
+
+  ctx.fillStyle="#333";
+
+  ctx.fillRect(
+    W/2-netHalf-18,
+    netY-18,
+    7,
+    40
+  );
+
+  ctx.fillRect(
+    W/2+netHalf+11,
+    netY-18,
+    7,
+    40
+  );
+}
+
+
+/* =========================
+   DRAW RACKETS
+========================= */
+
+function drawRackets(){
+
+  /*
+  PLAYER
+  */
+
+  const p=
+  worldToScreen(
+    player.x,
+    .015,
+    .04
+  );
+
+
+  ctx.beginPath();
+
+  ctx.ellipse(
+    p.x,
+    p.y,
+    55,
+    42,
+    0,
     0,
     Math.PI*2
   );
 
-  ctx.fillStyle="white";
+  ctx.fillStyle=
+  "rgba(255,80,50,.9)";
+
+  ctx.fill();
+
+
+  ctx.strokeStyle=
+  "white";
+
+  ctx.lineWidth=4;
+
+  ctx.stroke();
+
+
+  /*
+  Handle
+  */
+
+  ctx.fillStyle="#b06a2c";
+
+  ctx.fillRect(
+    p.x-8,
+    p.y+35,
+    16,
+    45
+  );
+
+
+  /*
+  AI RACKET
+  */
+
+  const a=
+  worldToScreen(
+    ai.x,
+    .985,
+    .035
+  );
+
+
+  ctx.beginPath();
+
+  ctx.ellipse(
+    a.x,
+    a.y,
+    22,
+    18,
+    0,
+    0,
+    Math.PI*2
+  );
+
+  ctx.fillStyle=
+  "#368cff";
+
   ctx.fill();
 
 }
 
-function loop(){
 
-  draw();
+/* =========================
+   DRAW BALL
+========================= */
+
+function drawBall(){
+
+  const p=
+  worldToScreen(
+    ball.x,
+    ball.z,
+    ball.h
+  );
+
+
+  /*
+  Perspective size
+  */
+
+  const size=
+  8+(1-ball.z)*11;
+
+
+  /*
+  Ball shadow
+  */
+
+  const shadow=
+  worldToScreen(
+    ball.x,
+    ball.z,
+    0
+  );
+
+
+  ctx.beginPath();
+
+  ctx.ellipse(
+    shadow.x,
+    shadow.y,
+    size*.8,
+    size*.28,
+    0,
+    0,
+    Math.PI*2
+  );
+
+  ctx.fillStyle=
+  "rgba(0,0,0,.35)";
+
+  ctx.fill();
+
+
+  /*
+  Ball
+  */
+
+  ctx.beginPath();
+
+  ctx.arc(
+    p.x,
+    p.y,
+    size,
+    0,
+    Math.PI*2
+  );
+
+  ctx.fillStyle=
+  "#ffd928";
+
+  ctx.fill();
+
+
+  ctx.strokeStyle=
+  "white";
+
+  ctx.lineWidth=2;
+
+  ctx.stroke();
+}
+
+
+/* =========================
+   MAIN LOOP
+========================= */
+
+let lastTime=0;
+
+
+function loop(time){
+
+  let dt=
+  (time-lastTime)/1000;
+
+  lastTime=time;
+
+
+  /*
+  Prevent huge physics jump
+  after lag
+  */
+
+  dt=
+  Math.min(dt,.035);
+
 
   detectHand();
 
-  update();
+  update(dt);
+
+
+  ctx.clearRect(
+    0,0,W,H
+  );
+
+
+  drawTable();
+
+  drawRackets();
+
+  drawBall();
+
 
   requestAnimationFrame(loop);
-
 }
-
-targetPaddleX =
-  W/2 - paddle.w/2;
-
-paddle.x =
-  targetPaddleX;
-
-resetBall();
 
 </script>
 
